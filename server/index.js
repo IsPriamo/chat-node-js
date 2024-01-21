@@ -1,80 +1,54 @@
-import express from 'express'
-import logger from 'morgan'
-import dotenv from 'dotenv'
-import { createClient } from '@libsql/client'
+import http from "http";
+import express from "express";
+import logger from "morgan";
+import cors from "cors";
+import { Server } from "socket.io";
+// mongo connection
+import "./config/mongo.js";
+// socket configuration
+import WebSockets from "./utils/WebSockets.js";
+// routes
+import indexRouter from "./routes/index.js";
+import userRouter from "./routes/user.js";
+import chatRoomRouter from "./routes/chatRoom.js";
+import deleteRouter from "./routes/delete.js";
+// middlewares
+import { decode } from './middlewares/jwt.js'
 
-import { Server } from 'socket.io'
-import { createServer } from 'node:http'
+const app = express();
 
-dotenv.config()
+/** Get port from environment and store in Express. */
+const port = process.env.PORT || "3000";
+app.set("port", port);
 
-const port = process.env.PORT ?? 3000
+app.use(logger("dev"));
+app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
 
-const app = express()
-const server = createServer(app)
-const io = new Server(server, {
+app.use("/", indexRouter);
+app.use("/users", userRouter);
+app.use("/room", decode, chatRoomRouter);
+app.use("/delete", deleteRouter);
+
+/** catch 404 and forward to error handler */
+app.use('*', (req, res) => {
+  return res.status(404).json({
+    success: false,
+    message: 'API endpoint doesnt exist'
+  })
+});
+
+global.users = [];
+/** Create HTTP server. */
+const server = http.createServer(app);
+/** Create socket connection */
+global.io = new Server(server, {
   connectionStateRecovery: {}
-})
-
-const db = createClient({
-  url: 'libsql://cuddly-wasp-midudev.turso.io',
-  authToken: process.env.DB_TOKEN
-})
-
-await db.execute(`
-  CREATE TABLE IF NOT EXISTS messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    content TEXT,
-    user TEXT
-  )
-`)
-
-io.on('connection', async (socket) => {
-  console.log('a user has connected!')
-
-  socket.on('disconnect', () => {
-    console.log('an user has disconnected')
-  })
-
-  socket.on('chat message', async (msg) => {
-    let result
-    const username = socket.handshake.auth.username ?? 'anonymous'
-    console.log({ username })
-    try {
-      result = await db.execute({
-        sql: 'INSERT INTO messages (content, user) VALUES (:msg, :username)',
-        args: { msg, username }
-      })
-    } catch (e) {
-      console.error(e)
-      return
-    }
-
-    io.emit('chat message', msg, result.lastInsertRowid.toString(), username)
-  })
-
-  if (!socket.recovered) { // <- recuperase los mensajes sin conexión
-    try {
-      const results = await db.execute({
-        sql: 'SELECT id, content, user FROM messages WHERE id > ?',
-        args: [socket.handshake.auth.serverOffset ?? 0]
-      })
-
-      results.rows.forEach(row => {
-        socket.emit('chat message', row.content, row.id.toString(), row.user)
-      })
-    } catch (e) {
-      console.error(e)
-    }
-  }
-})
-
-app.use(logger('dev'))
-
-app.get('/', (req, res) => {
-  res.sendFile(process.cwd() + '/client/index.html')
-})
-
-server.listen(port, () => {
-  console.log(`Server running on port ${port}`)
-})
+});
+global.io.on('connection', WebSockets.connection)
+/** Listen on provided port, on all network interfaces. */
+server.listen(port);
+/** Event listener for HTTP server "listening" event. */
+server.on("listening", () => {
+  console.log(`Listening on port:: http://localhost:${port}/`)
+});
